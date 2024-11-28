@@ -103,7 +103,7 @@ console.log("Final Game Object before save:", game);
         }
     });
 
-    socket.on("join-game", async ({nickname, gameId}) => {
+    socket.on("join-game", async ({nickname, shortCode}) => {
         try {
 //            if (!gameId.match(/^[0-9a-fA-F]{24}$/)) {
 //                socket.emit("notCorrectGame", "Please enter a valid game ID");
@@ -112,7 +112,7 @@ console.log("Final Game Object before save:", game);
 //            }
 
              // Find game by short code instead of ID
-             let game = await Game.findOne({ shortCode: gameId});
+             let game = await Game.findOne({ shortCode: shortCode});
              if (!game) {
                 socket.emit("notCorrectGame", "Game not found. Check the code and try again.");
                 return;
@@ -171,17 +171,25 @@ console.log("Final Game Object before save:", game);
       });
 
     // timer listener
-socket.on("timer", async ({playerId, gameID}) =>{
+socket.on("timer", async ({playerId, shortCode}) =>{
     let countDown = 5;
-    console.log("Timer started with:", { playerId, gameID });
-    if (!gameID || !gameID.match(/^[0-9a-fA-F]{24}$/)) {
-        console.error("Invalid or missing gameID:", gameID);
-        socket.emit("error", "Invalid game ID provided.");
-        return;
-    }   
-    console.log("Game ID provided:", gameID);
+    console.log("Timer started with:", { playerId, shortCode });
+    
+  // Validate shortCode
+  if (!shortCode || typeof shortCode !== "string") {
+    console.error("Invalid or missing shortCode:", shortCode);
+    socket.emit("error", "Invalid short code provided.");
+    return;
+  }
+    console.log("Game ID provided:", shortCode);
     console.log("timer started");
-    let game = await Game.findById(gameID); 
+     // Find game by shortCode
+  let game = await Game.findOne({ shortCode });
+  if (!game) {
+    console.error("Game not found for shortCode:", shortCode);
+    socket.emit("error", "Game not found.");
+    return;
+  }
    
     console.log("Game object fetched:", game);
     let player = game.players.id(playerId);
@@ -193,7 +201,7 @@ socket.on("timer", async ({playerId, gameID}) =>{
     if (player.isPartyLeader) {
         let timerId = setInterval( async () => {
             if(countDown >=0) {
-                io.to(gameID).emit("timer", {
+                io.to(shortCode).emit("timer", {
                     countDown,
                     msg: "Game Starting"
                 });
@@ -202,8 +210,8 @@ socket.on("timer", async ({playerId, gameID}) =>{
             } else{
                 game.isJoin = false;
                 game = await game.save();
-                io.to(gameID).emit("updateGame", game);
-                startGameClock(gameID)
+                io.to(game.shortCode).emit("updateGame", game);
+                startGameClock(game.shortCode)
                 clearInterval(timerId);
             }
         }, 1000);
@@ -212,8 +220,12 @@ socket.on("timer", async ({playerId, gameID}) =>{
 });
 
 
-const startGameClock = async (gameID) => {
-    let game = await Game.findById(gameID);
+const startGameClock = async (shortCode) => {
+    let game = await Game.findOne({ shortCode });
+    if (!game) {
+        console.error("Game not found for shortCode:", shortCode);
+        return;
+      }
     game.startTime =  new Date().getTime();
     game = await game.save();
 
@@ -222,7 +234,7 @@ const startGameClock = async (gameID) => {
     let timerId = setInterval((function gameIntervalFunc() {
         if (time >= 0) {
             const timeFormat = calculateTime(time);
-            io.to(gameID).emit("timer", {
+            io.to(shortCode).emit("timer", {
                 countDown: timeFormat,
                 msg: "Time Remaining"
             })
@@ -233,7 +245,7 @@ const startGameClock = async (gameID) => {
             (async () => {
                 try{
                     let endTime = new Date().getTime();
-                    let game = await Game.findById(gameID);
+                    let game = await Game.findById({ shortCode });
                     let {startTime} = game;
                     game.isOver = true;
                     game.players.forEach((player, index) => {
@@ -242,7 +254,7 @@ const startGameClock = async (gameID) => {
                         }
                     })
                     game = await game.save();
-                    io.to(gameID).emit("updateGame", game);
+                    io.to(shortCode).emit("updateGame", game);
 
                     clearInterval(timerId);
                 } catch (e){
@@ -251,7 +263,6 @@ const startGameClock = async (gameID) => {
             })();
 
 
-            
         }
         return gameIntervalFunc;
     })(),
