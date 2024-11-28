@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const http = require("http");
 const Game = require('./model/Game');
 const getSentence = require("./api/getSentence");
+require('dotenv').config(); 
 
 //const exp = require("constants");
 
@@ -14,7 +15,17 @@ const getSentence = require("./api/getSentence");
 const app = express();
 const port = process.env.PORT || 3000;
 var server = http.createServer(app);
-var io = require('socket.io')(server);
+
+
+
+var io = require('socket.io')(server ,  {
+    cors: {
+      origin: "*", // Replace "*" with specific domains if needed
+      methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"], // Add all desired HTTP methods here
+      allowedHeaders: ["Content-Type", "Authorization"], // Add allowed headers if needed
+      credentials: true // Allow credentials if necessary
+    }
+  });
 
 // FRONTEND -> MIDDLEWARE -> BACKEND
 
@@ -22,7 +33,12 @@ var io = require('socket.io')(server);
 app.use(express.json());
 
 // connect to mongodb
-const DB = "mongodb+srv://sujal:sujal@cluster0.li2d1.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0";
+const DB = process.env.MONGO_URI;
+
+const generateShortCode = () => {
+  return Math.random().toString(36).substring(2, 8).toUpperCase();
+};
+
 
 // listening to socket io events from the client (flutter code)
 io.on("connection", (socket) => {
@@ -33,9 +49,31 @@ io.on("connection", (socket) => {
         try {
             console.log('entered the try block');
             let game = new Game();
+            console.log("Initial Game Object:", game);
             const sentence = await getSentence();
             console.log("Sentence fetched:", sentence);
             game.words = sentence;
+
+              // Generate unique short code
+                        let shortCode;
+                        let isUnique = false;
+                        let attempts = 0;
+                        while (!isUnique && attempts < 10) {
+                          shortCode = generateShortCode();
+                            console.log(`Attempt ${attempts + 1}: Generated Shortcode`, shortCode);
+                            const existingGame = await Game.findOne({ shortCode });
+                            console.log("Existing Game with this Shortcode:", existingGame);
+                          if (!existingGame) {
+                            isUnique = true;
+                          }  attempts++;
+                        }
+                        if (!isUnique) {
+                          console.error("Could not generate unique shortcode after 10 attempts");
+                          socket.emit("error", "Could not create game. Please try again.");
+                          return;
+                        }
+                       game.shortCode = shortCode;
+console.log("Final Game Object before save:", game);
             let player = {
                 socketID : socket.id,
                 nickname,
@@ -43,9 +81,19 @@ io.on("connection", (socket) => {
             };
             console.log("Player object:", player);
             game.players.push(player);
+            //game.shortCode.push(shortcode);
+
             game = await game.save();
             const gameId = game._id.toString();
             socket.join(gameId);
+
+             // Emit both game ID and short code
+                        socket.emit("gameCreated", {
+                          gameId,
+                          shortCode
+                        });
+
+
             io.to(gameId).emit("updateGame", game);
 
 
@@ -57,13 +105,20 @@ io.on("connection", (socket) => {
 
     socket.on("join-game", async ({nickname, gameId}) => {
         try {
-            if (!gameId.match(/^[0-9a-fA-F]{24}$/)) {
-                socket.emit("notCorrectGame", "Please enter a valid game ID");
-                return;
-            
-            }
+//            if (!gameId.match(/^[0-9a-fA-F]{24}$/)) {
+//                socket.emit("notCorrectGame", "Please enter a valid game ID");
+//                return;
+//
+//            }
 
-            let game = await Game.findById(gameId);
+             // Find game by short code instead of ID
+             let game = await Game.findOne({ shortCode: gameId});
+             if (!game) {
+                socket.emit("notCorrectGame", "Game not found. Check the code and try again.");
+                return;
+            }
+            console.log(game);
+           // let game = await Game.findById(gameId);
             if (game.isJoin) {
                 const id = game._id.toString();
                 let player = {
@@ -73,7 +128,7 @@ io.on("connection", (socket) => {
                 socket.join(id);
                 game.players.push(player);
                 game = await game.save();
-                io.to(gameId).emit("updateGame", game);
+                io.to(id).emit("updateGame", game);
             }  
             else {
                 
