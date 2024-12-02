@@ -5,7 +5,8 @@ const http = require("http");
 const Game = require('./model/Game');
 const getSentence = require("./api/getSentence");
 require('dotenv').config(); 
-
+//const deleteOldFinishedGames = require('./utils/game_cleanup');
+   
 //const exp = require("constants");
 
 
@@ -94,8 +95,7 @@ console.log("Final Game Object before save:", game);
                         });
 
 
-            io.to(gameId).emit("updateGame", game);
-
+            io.to(gameId).emit("updateGame", game);            
 
             console.log('exiting try block');
         } catch (error) {
@@ -171,103 +171,79 @@ console.log("Final Game Object before save:", game);
       });
 
     // timer listener
-socket.on("timer", async ({playerId, shortCode}) =>{
+  socket.on("timer", async ({ playerId, gameID , shortCode}) => {
     let countDown = 5;
-    console.log("Timer started with:", { playerId, shortCode });
-    
-  // Validate shortCode
-  if (!shortCode || typeof shortCode !== "string") {
-    console.error("Invalid or missing shortCode:", shortCode);
-    socket.emit("error", "Invalid short code provided.");
-    return;
-  }
-    console.log("Game ID provided:", shortCode);
-    console.log("timer started");
-     // Find game by shortCode
-  let game = await Game.findOne({ shortCode });
-  if (!game) {
-    console.error("Game not found for shortCode:", shortCode);
-    socket.emit("error", "Game not found.");
-    return;
-  }
-   
-    console.log("Game object fetched:", game);
+    let game = await Game.findById(gameID);
     let player = game.players.id(playerId);
-    if (!player) {
-        socket.emit("error", "Player not found in the game.");
-        return;
-    }
-    
+
     if (player.isPartyLeader) {
-        let timerId = setInterval( async () => {
-            if(countDown >=0) {
-                io.to(shortCode).emit("timer", {
-                    countDown,
-                    msg: "Game Starting"
-                });
-                console.log(countDown);
-                countDown --;
-            } else{
-                game.isJoin = false;
-                game = await game.save();
-                io.to(game.shortCode).emit("updateGame", game);
-                startGameClock(game.shortCode)
-                clearInterval(timerId);
-            }
-        }, 1000);
+      let timerId = setInterval(async () => {
+        if (countDown >= 0) {
+          io.to(gameID).emit("timer", {
+            countDown,
+            msg: "Game Starting",
+          });
+          console.log(countDown);
+          countDown--;
+        } else {
+          game.isJoin = false;
+          game = await game.save();
+          io.to(gameID).emit("updateGame", game);
+          startGameClock(gameID);
+          clearInterval(timerId);
+        }
+      }, 1000);
     }
- });
+  });
 });
 
+const startGameClock = async (gameID) => {
+  let game = await Game.findById(gameID);
+  game.startTime = new Date().getTime();
+  game = await game.save();
 
-const startGameClock = async (shortCode) => {
-    let game = await Game.findOne({ shortCode });
-    if (!game) {
-        console.error("Game not found for shortCode:", shortCode);
-        return;
+  let time = 120;
+
+  let timerId = setInterval(
+    (function gameIntervalFunc() {
+      if (time >= 0) {
+        const timeFormat = calculateTime(time);
+        io.to(gameID).emit("timer", {
+          countDown: timeFormat,
+          msg: "Time Remaining",
+        });
+        console.log(time);
+        time--;
+      } else {
+        (async () => {
+          try {
+            let endTime = new Date().getTime();
+            let game = await Game.findById(gameID);
+            let { startTime } = game;
+            game.isOver = true;
+            game.players.forEach((player, index) => {
+              if (player.WPM === -1) {
+                game.players[index].WPM = calculateWPM(
+                  endTime,
+                  startTime,
+                  player
+                );
+              }
+            });
+            game = await game.save();
+            io.to(gameID).emit("updateGame", game);
+            clearInterval(timerId);
+          } catch (e) {
+            console.log(e);
+          }
+        })();
       }
-    game.startTime =  new Date().getTime();
-    game = await game.save();
-
-    let time = 120;
-
-    let timerId = setInterval((function gameIntervalFunc() {
-        if (time >= 0) {
-            const timeFormat = calculateTime(time);
-            io.to(shortCode).emit("timer", {
-                countDown: timeFormat,
-                msg: "Time Remaining"
-            })
-            console.log(time);
-            time --;
-        }
-        else{
-            (async () => {
-                try{
-                    let endTime = new Date().getTime();
-                    let game = await Game.findById({ shortCode });
-                    let {startTime} = game;
-                    game.isOver = true;
-                    game.players.forEach((player, index) => {
-                        if (player.WPM === -1) {
-                            game.players[index].WPM = calculateWPM(endTime, startTime, player);
-                        }
-                    })
-                    game = await game.save();
-                    io.to(shortCode).emit("updateGame", game);
-
-                    clearInterval(timerId);
-                } catch (e){
-                    console.log(e);
-                }
-            })();
-
-
-        }
-        return gameIntervalFunc;
+      return gameIntervalFunc;
     })(),
-    1000);
-  }
+    1000
+  );
+};
+
 
   const calculateTime = (time) => {
     let min = Math.floor(time / 60);
@@ -283,8 +259,28 @@ const startGameClock = async (shortCode) => {
     return WPM;
   }
 
+  const deleteOldFinishedGames = async ()  => {
+    try {
+        const oneHrAgo = Date.now() - (60*60*1000);
+        const result = await Game.deleteMany(
+            {
+                isOver : true,
+                startTime : {$lt: oneHrAgo}
+            }
+        );
+
+        console.log(`Deleted ${result.deletedCount} finished games older than one hour`);
+    } catch (error) {
+        console.error('Error deleting old finished games:', error); 
+    }
+};
+
+
 mongoose.connect(DB).then(() => {
     console.log("connection successful!");
+
+     // Start periodic cleanup
+     setInterval(deleteOldFinishedGames, 60 * 60 * 1000); // Runs every hour
 }).catch((e) => {
     console.log(e);
 
